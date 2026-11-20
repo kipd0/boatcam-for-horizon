@@ -1,0 +1,7 @@
+id = "boatcam"
+name = "BoatCam"
+version = "0.2.0"
+description = "BoatCam-style speed-weighted direction, smoothing and synced view."
+api = "0.2"
+side = "client"
+capabilities = ["registries"]

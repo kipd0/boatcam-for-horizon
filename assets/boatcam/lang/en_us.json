@@ -1,0 +1,7 @@
+{
+  "boatcam.enabled": "Enable BoatCam",
+  "boatcam.smoothness": "Turning response (1–100)",
+  "boatcam.smoothness.tip": "Original BoatCam behavior: 1 is very lazy and 100 follows direction quickly. Recommended: 50.",
+  "boatcam.sync_view": "Sync player direction to camera",
+  "boatcam.third_person": "Switch to third-person in boats"
+}
