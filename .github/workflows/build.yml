@@ -1,0 +1,47 @@
+name: Build BoatCam
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boatcam-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build .hmod
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out BoatCam
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: boatcam-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'build.sh') }}
+          restore-keys: |
+            boatcam-cargo-${{ runner.os }}-
+
+      - name: Build BoatCam for Horizon
+        run: |
+          sh build.sh
+          test -s boatcam.hmod
+
+      - name: Upload BoatCam mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: boatcam-hmod
+          path: boatcam.hmod
+          if-no-files-found: error
+          retention-days: 30
