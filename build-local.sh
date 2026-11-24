@@ -18,6 +18,9 @@ cp -R "$mod_dir/src" "$mod_dir/assets" "$mod_dir/Cargo.toml" "$mod_dir/Cargo.loc
 version=$(cat "$sdk/tools/ci/rust-version")
 rustup toolchain install "$version" --profile minimal --component rust-src --target wasm32-unknown-unknown
 export RUSTUP_TOOLCHAIN="$version"
+# Run dependency-free camera math regressions before compiling the Wasm mod.
+rustc --edition=2024 --test "$build_dir/src/motion.rs" -o "$build_dir/motion-tests"
+"$build_dir/motion-tests"
 cargo build --manifest-path "$sdk/Cargo.toml" -p cargo-horizon-mod
 cd "$build_dir"
 "$sdk/target/debug/cargo-horizon-mod" build --wasm

@@ -1,16 +1,25 @@
-# BoatCam for Horizon / Nova iOS — improved source (v0.2.0)
+# BoatCam for Horizon / Nova iOS (v0.3.0)
 
-This is a **source-only release**. It is not a compiled `.hmod`. Rebuild with a matching Horizon mod SDK before installing. It is a standalone WebAssembly mod; rebuilding Nova's IPA is not needed.
+Standalone client-side WebAssembly mod for Nova iOS. The matching Nova SDK is
+[commit `1934f13b7992f123bbf5e200dbca8836d9cc3779`](https://github.com/kipd0/nova-ios/commit/1934f13b7992f123bbf5e200dbca8836d9cc3779)
+on the `newupdate` branch. The game/IPA does not need to be rebuilt to install
+the mod on that matching launcher.
 
-## What changed
+## What's new
 
-- Directional yaw now follows the original BoatCam formula: blend **facing direction** toward **travel direction** by `speed / 3`, then ease the camera toward the blended angle by the smoothness percentage.
-- The original uses **boat yaw** as the facing direction. This version of the Horizon API does not expose the vehicle's yaw to client WebAssembly mods, so the port uses the **rider's yaw** as the closest available approximation. This means it cannot perfectly match the original during drifting/steering.
-- Camera angles can now be synchronized to the **actual player view**, rather than changing only the rendered camera. This also makes the crosshair and camera direction agree (the game still controls steering, collision and input).
-- Auto-selects **third-person back** when it identifies a driven boat, and restores the user's previous camera perspective when exiting.
-- Lets the normal camera/mouse look work when stopped (rather than freezing the last travelling heading).
-- Ignores frequent `move_vehicle` and harmless passenger-update packets instead of discarding the smoothing state for every such packet. Tolerates up to two missing paddle-packet ticks.
-- Filters seat-position movement noise and ignores large server correction jumps.
+- Uses the client API's actual mounted vehicle, hull position and hull yaw
+  instead of estimating boat orientation from the rider's camera.
+- Blends hull facing toward travel direction by speed / 3, then applies
+  configurable angular smoothing. Moving the camera cannot feed back into
+  the hull heading estimate.
+- Checks the actual mount each tick, restoring perspective when the player
+  dismounts or changes vehicles. Recognizes vanilla boats, chest boats and
+  rafts; outgoing paddle packets still identify the driver (the controlling
+  passenger API remains server-side), with a two-tick grace period.
+- Preserves free look while stopped, optional view sync and auto third-person
+  back, interpolation between ticks, and camera collision clipping.
+- Camera-only: does not modify hull physics, steering, movement packets or
+  gameplay rules.
 
 ## Settings
 
@@ -18,34 +27,35 @@ Open **Options → Mods → BoatCam → Config**.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Enable BoatCam | on | Follow direction while driving a boat or raft |
-| Turning response | 50 | Original BoatCam style: 1 = lazy, 100 = reacts quickly |
-| Sync player direction to camera | on | Also rotates the actual client player view; turn off if it interferes with another mod or control scheme |
-| Switch to third-person in boats | on | Like the original default perspective |
+| Enable BoatCam | on | Track direction while driving a boat or raft |
+| Turning response | 50 | 1 = lazy, 100 = reacts quickly |
+| Sync player direction to camera | on | Also rotates the actual player view |
+| Switch to third-person in boats | on | Automatically select third-person back |
 
-Previous versions used a different meaning for smoothness, so reset the setting to **50** for a comparable baseline if you already have a saved value.
+## Build
 
-## Build on Termux / Linux / macOS
+Run `sh build.sh` on Linux/macOS/Termux with Git and rustup installed. It
+fetches the exact Nova revision above, runs camera math regression tests, and
+uses the matching Horizon packager to produce `boatcam.hmod`.
 
-If you already have the matching Nova checkout at `~/minecraft/nova-ios`, run the following from the source directory:
+If you already have a compatible Nova checkout, use
+`sh build-local.sh "$HOME/minecraft/nova-ios"`. The local checkout must match
+the game build you install the mod on. The scripts use the SDK's pinned Rust
+toolchain and may need network access for dependencies.
 
-```sh
-sh build-local.sh "$HOME/minecraft/nova-ios"
-```
-
-The resulting `boatcam.hmod` will appear beside `build-local.sh`. This uses the existing source checkout and its build cache; it does not download the entire repository again.
-
-Without an existing checkout, run `sh build.sh` to download the pinned, compatible source. You'll need a working Rust/rustup toolchain and network access to Rust dependencies for the first build.
-
-The source and packager target Nova revision: `f3cd51d53a82bb8ae6932793a75e61b39960fad6`.
+GitHub Actions also builds and uploads the `boatcam-hmod` artifact:
+[Build BoatCam](https://github.com/kipd0/boatcam-for-horizon/actions).
 
 ## Install
 
-Copy the **newly built** `boatcam.hmod` into **Files → Nova → Game → horizon-mods/**, replacing the previous one. Restart the game. In `horizon-mods.txt`, use `mod.boatcam:true` if enabling it manually.
+Copy the newly built `boatcam.hmod` into **Files → Nova → Game → horizon-mods/**,
+replacing the old file, and restart the game. In `horizon-mods.txt`, use
+`mod.boatcam:true` if enabling manually.
 
 ## Caveats
 
-- The client API at the pinned revision exposes the vehicle relationship and its rotation only on the **server** side, so the mod still infers driving from local outgoing `paddle_boat` packets and motion from the rider's position.
-- The original BoatCam also intercepts mouse-look and boat passenger yaw clamping. Those behaviors are not replicated by this portable `.hmod` and can affect the feeling on turns.
-- The port has no separate look-left/right/behind buttons or Velocity mode yet; this version focuses on achieving a more natural **Directional** mode.
-- This version has not been tested on an iPad or compiled in this environment; the Rust/Wasm toolchain was unavailable here. The code was checked against the host API definitions and the motion math was tested separately.
+The original BoatCam also intercepts mouse-look and passenger yaw clamping;
+this portable mod does not reproduce those hooks or separate look buttons.
+The driver check still uses paddle packets, so the exact mount alone does not
+activate the camera for a passenger. Device testing is needed for camera
+behavior and runtime compatibility; build success is checked by GitHub Actions.

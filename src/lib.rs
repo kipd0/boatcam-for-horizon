@@ -14,10 +14,11 @@ const PADDLE_GRACE_TICKS: u8 = 2;
 
 struct Ride {
     rider: EntityRef,
+    boat: EntityRef,
     level: LevelRef,
     camera: Motion,
     missed_paddles: u8,
-    original_camera: CameraType,
+    original_camera: Option<CameraType>,
 }
 
 #[derive(Default)]
@@ -30,11 +31,16 @@ pub struct Mod {
 impl Mod {
     fn end_ride(&self, host: &dyn ClientHost) {
         let previous = self.ride.lock().unwrap().take();
-        if let Some(ride) = previous {
-            host.set_camera_type(ride.original_camera);
+        if let Some(original) = previous.and_then(|ride| ride.original_camera) {
+            host.set_camera_type(original);
         }
         *self.boom.lock().unwrap() = None;
     }
+}
+
+fn is_boat_kind(id: &str) -> bool {
+    id.strip_prefix("minecraft:").is_some_and(|path|
+        path == "boat" || path == "raft" || path.ends_with("_boat") || path.ends_with("_raft"))
 }
 
 #[mod_api::horizon_mod]
@@ -78,54 +84,70 @@ impl Hooks for Mod {
     }
 
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
-        if host.is_paused() {
-            return;
-        }
         if !host.setting_bool("enabled").unwrap_or(true) {
             self.end_ride(host);
             return;
         }
+        if host.is_paused() {
+            return;
+        }
 
-        // This version of Horizon exposes vehicle relationships only server-side.
-        // A local `paddle_boat` packet is the best supported client-side driving
-        // signal. Retaining the same rider across brief gaps avoids jitter.
+        // Client vehicle reads now expose the actual mount. Keep paddle packets
+        // only as the driver signal (controlling_passenger is still server-only).
         let paddle = self.paddle.load(Ordering::Relaxed);
         let sample = (|| {
-            let player = host.local_player()?.entity();
-            if Some(player) != host.camera_entity() {
+            let rider = host.local_player()?.entity();
+            if Some(rider) != host.camera_entity() {
                 return None;
             }
-            let [x, _, z] = player.position(host)?;
-            let [yaw, pitch] = player.rotation(host)?;
-            Some((player, host.level(host.dimension())?, [x, z], yaw, pitch))
+            let boat = rider.vehicle(host)?;
+            let kind = boat.kind(host)?.id(host);
+            if !is_boat_kind(&kind) {
+                return None;
+            }
+            let [x, _, z] = boat.position(host)?;
+            let [boat_yaw, _] = boat.rotation(host)?;
+            let [rider_yaw, pitch] = rider.rotation(host)?;
+            if ![x, z].iter().all(|v| v.is_finite())
+                || ![boat_yaw, rider_yaw, pitch].iter().all(|v| v.is_finite())
+            {
+                return None;
+            }
+            Some((rider, boat, host.level(host.dimension())?, [x, z], boat_yaw, rider_yaw, pitch))
         })();
 
-        let Some((rider, level, position, facing_yaw, pitch)) = sample else {
+        let Some((rider, boat, level, position, boat_yaw, rider_yaw, pitch)) = sample else {
             self.end_ride(host);
             return;
         };
 
+        // Restore the old perspective BEFORE capturing it for a different boat
+        // or level, otherwise third-person can leak into the next ride.
+        let changed = self.ride.lock().unwrap().as_ref().is_some_and(|r|
+            r.rider != rider || r.boat != boat || r.level != level);
+        if changed {
+            self.end_ride(host);
+        }
+
+        let sync_view = host.setting_bool("sync_view").unwrap_or(true);
+        let response = (host.setting_f64("smoothness").unwrap_or(50.0) as f32 / 100.0)
+            .clamp(0.01, 1.0);
+        let third_person = host.setting_bool("third_person").unwrap_or(true);
         let mut sync_yaw = None;
         let mut start_third_person = false;
-        let mut camera_to_restore = None;
+        let mut expired = false;
         {
             let mut ride = self.ride.lock().unwrap();
-            if ride
-                .as_ref()
-                .is_some_and(|r| r.rider != rider || r.level != level)
-            {
-                camera_to_restore = ride.take().map(|r| r.original_camera);
-            }
-
             if ride.is_none() && paddle {
                 *ride = Some(Ride {
                     rider,
+                    boat,
                     level,
-                    camera: Motion::new(position, facing_yaw),
+                    camera: Motion::new(position, rider_yaw),
                     missed_paddles: 0,
-                    original_camera: host.camera_type(),
+                    original_camera: third_person.then(|| host.camera_type()),
                 });
-                start_third_person = host.setting_bool("third_person").unwrap_or(true);
+                start_third_person = third_person;
             }
 
             if let Some(r) = ride.as_mut() {
@@ -134,39 +156,25 @@ impl Hooks for Mod {
                 } else {
                     r.missed_paddles = r.missed_paddles.saturating_add(1);
                 }
-                if r.missed_paddles > PADDLE_GRACE_TICKS {
-                    camera_to_restore = ride.take().map(|r| r.original_camera);
-                } else {
-                    let sync_view = host.setting_bool("sync_view").unwrap_or(true);
-                    let tracking = r.camera.sample(
-                        position,
-                        facing_yaw,
-                        (host.setting_f64("smoothness").unwrap_or(50.0) as f32 / 100.0)
-                            .clamp(0.01, 1.0),
-                        sync_view,
-                    );
-                    if tracking && sync_view {
-                        sync_yaw = Some(r.camera.yaw());
-                    }
+                expired = r.missed_paddles > PADDLE_GRACE_TICKS;
+                if !expired && r.camera.sample(position, boat_yaw, rider_yaw, response)
+                    && sync_view
+                {
+                    sync_yaw = Some(r.camera.yaw());
                 }
             }
         }
-        if let Some(original) = camera_to_restore {
-            host.set_camera_type(original);
+        if expired {
+            self.end_ride(host);
+            return;
         }
         if start_third_person {
             host.set_camera_type(CameraType::ThirdPersonBack);
         }
         if let Some(yaw) = sync_yaw {
-            // The original BoatCam updates player YRot, not only rendered camera
-            // yaw. Horizon's host method implements that without a game patch.
-            if host.set_local_rotation(yaw, pitch).is_ok() {
-                if let Some(r) = self.ride.lock().unwrap().as_mut()
-                    && r.rider == rider && r.level == level
-                {
-                    r.camera.note_synced(yaw);
-                }
-            }
+            // View only: the normal client tick sends its ordinary look packet.
+            // Hull yaw, steering, collision and physics remain untouched.
+            let _ = host.set_local_rotation(yaw, pitch);
         }
     }
 
